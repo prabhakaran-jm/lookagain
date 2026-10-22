@@ -13,6 +13,8 @@ import numpy as np
 from app.vision.compare_shots import MAX_RETAKES, compare_shots
 from app.vision.evidence_gate import validate_claims
 from app.vision.packs.appliance_leds import inspect_appliance_leds
+from app.vision.packs.bike_brake_pad import inspect_bike_brake_pad
+from app.vision.packs.leaf_spot import inspect_leaf_spot
 from app.vision.remediate import remediate_frame
 from app.vision.triage import triage_frame
 
@@ -73,14 +75,13 @@ def decode_image(data: bytes) -> np.ndarray | None:
 def _inspect(pack_id: str, bgr: np.ndarray, roi: tuple[int, int, int, int] | None) -> dict[str, Any]:
     if pack_id == "appliance_leds":
         return inspect_appliance_leds(bgr, roi).to_dict()
-    # Stubs for remaining packs — bounded placeholders until specialized inspectors land
+    if pack_id == "bike_brake_pad":
+        return inspect_bike_brake_pad(bgr, roi).to_dict()
+    if pack_id == "leaf_spot":
+        return inspect_leaf_spot(bgr, roi).to_dict()
     return {
-        "led_count": 0,
-        "claims": [
-            f"{pack_id}: visual features recorded; specialist inspector pending — escalate if unsure."
-        ],
-        "next_action": "finalize_report",
-        "color_counts": {},
+        "claims": [f"{pack_id}: pack not allowlisted — escalate."],
+        "next_action": "escalate_human",
         "metrics": {},
     }
 
@@ -256,8 +257,7 @@ def run_step(session: Session, image_bytes: bytes) -> dict[str, Any]:
         "pack_id": session.pack_id,
         "next_action": "finalize_report",
         "claims": gate.claims,
-        "inspect": {k: v for k, v in inspect.items() if k != "leds"}
-        | {"led_count": inspect.get("led_count"), "color_counts": inspect.get("color_counts")},
+        "inspect": {k: v for k, v in inspect.items() if k not in {"leds"}},
         "triage": working_triage.to_dict(),
         "retakes_remaining": session.retakes_remaining,
         "trace": session.trace,
