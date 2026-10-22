@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.aws-sam/
+*.pem
+data/uploads/
+data/traces/
+artifacts/
+.cursor/
+deploy/cool_instance.txt
+deploy/mp_filters*.json

@@ -1,0 +1,20 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//LookAgain//COOL Trial//EN
+BEGIN:VEVENT
+UID:lookagain-cool-soft-20261028@lookagain
+DTSTAMP:20261022T140000Z
+DTSTART:20261028T080000Z
+DTEND:20261028T081500Z
+SUMMARY:LookAgain COOL soft reminder — finish demo video
+DESCRIPTION:Finish COOL demo video today. Hard stop tomorrow: deploy/stop_cool.ps1 + cancel Marketplace subscription.\nShot list: deploy/DEMO_VIDEO_SHOTLIST.md
+END:VEVENT
+BEGIN:VEVENT
+UID:lookagain-cool-hard-20261029@lookagain
+DTSTAMP:20261022T140000Z
+DTSTART:20261029T070000Z
+DTEND:20261029T071500Z
+SUMMARY:LookAgain COOL HARD STOP — stop instance + cancel Marketplace
+DESCRIPTION:Run: $env:AWS_PROFILE='lookagain'; .\\deploy\\stop_cool.ps1\nThen cancel: https://console.aws.amazon.com/marketplace/home#/subscriptions\nInstance i-0f6e85df280826133 — trial converts to paid today.
+END:VEVENT
+END:VCALENDAR

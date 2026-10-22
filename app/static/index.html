@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LookAgain</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --fg: #e7ecf1;
+      --muted: #8b98a5;
+      --accent: #3d9cf0;
+      --warn: #f0b429;
+      --panel: #1a222c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1c2a3a, var(--bg));
+      color: var(--fg);
+      min-height: 100vh;
+    }
+    .replay-banner {
+      display: none;
+      background: var(--warn);
+      color: #1a1200;
+      text-align: center;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 0.55rem;
+    }
+    .replay-banner.visible { display: block; }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    h1 { font-size: 1.75rem; margin: 0 0 0.35rem; }
+    p.lead { color: var(--muted); margin-top: 0; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid #2a3644;
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-top: 1.25rem;
+    }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    select, button, input[type="file"] {
+      width: 100%;
+      margin-bottom: 0.9rem;
+    }
+    select, button {
+      padding: 0.7rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid #3a4a5c;
+      background: #121820;
+      color: var(--fg);
+    }
+    button {
+      background: var(--accent);
+      border-color: transparent;
+      color: #041018;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.8rem;
+      background: #0c1015;
+      padding: 0.85rem;
+      border-radius: 8px;
+      border: 1px solid #243040;
+      max-height: 280px;
+      overflow: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="replayBanner" class="replay-banner" role="status">REPLAY — recorded trace, not a live agent run</div>
+  <main>
+    <h1>LookAgain</h1>
+    <p class="lead">Phone capture → OpenCV triage → guided retake. Thursday hello-world scaffold.</p>
+
+    <div class="panel">
+      <label for="pack">Scenario pack</label>
+      <select id="pack">
+        <option value="appliance_leds">appliance_leds</option>
+        <option value="bike_brake_pad">bike_brake_pad</option>
+        <option value="leaf_spot">leaf_spot</option>
+        <option value="breaker_panel">breaker_panel (should escalate)</option>
+      </select>
+
+      <label for="photo">Photo (phone camera or file)</label>
+      <input id="photo" type="file" accept="image/*" capture="environment" />
+
+      <button id="send" type="button">Upload &amp; start</button>
+      <pre id="out">Waiting…</pre>
+    </div>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get("mode") === "replay") {
+      document.getElementById("replayBanner").classList.add("visible");
+    }
+    const out = document.getElementById("out");
+    document.getElementById("send").onclick = async () => {
+      const pack = document.getElementById("pack").value;
+      const fileInput = document.getElementById("photo");
+      out.textContent = "Starting session…";
+      const startFd = new FormData();
+      startFd.append("pack_id", pack);
+      const startRes = await fetch("/api/session/start", { method: "POST", body: startFd });
+      const startJson = await startRes.json();
+      if (!startJson.allowed) {
+        out.textContent = JSON.stringify(startJson, null, 2);
+        return;
+      }
+      if (!fileInput.files.length) {
+        out.textContent = JSON.stringify({ ...startJson, note: "Pick a photo to upload" }, null, 2);
+        return;
+      }
+      const upFd = new FormData();
+      upFd.append("pack_id", pack);
+      upFd.append("file", fileInput.files[0]);
+      const upRes = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "X-Correlation-ID": startJson.correlation_id },
+        body: upFd,
+      });
+      const upJson = await upRes.json();
+      out.textContent = JSON.stringify({ session: startJson, upload: upJson }, null, 2);
+    };
+  </script>
+</body>
+</html>
