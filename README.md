@@ -10,14 +10,20 @@ Phone capture → OpenCV 5 triage / remediate / reason-aware `compare_shots` →
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt   # pins opencv-python==5.0.0.93
+$env:AWS_PROFILE='lookagain'     # Bedrock tool-use (optional)
+$env:LOOKAGAIN_AGENT='auto'      # auto | bedrock | heuristic
+$env:BEDROCK_MODEL_ID='us.anthropic.claude-haiku-4-5-20251001-v1:0'
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+
 Open http://127.0.0.1:8000 — use the file input (`capture="environment"` works on phones over HTTP).
 
-Health: http://127.0.0.1:8000/health
+Health: http://127.0.0.1:8000/health — includes `agent.mode` and tool list.
 
-Replay mode (when wired): append `?mode=replay` — a **REPLAY** banner must stay visible. Never present recorded traces as live.
+**Agentic loop:** Bedrock Converse picks the next tool from OpenCV tool results (`triage_frame` → `remediate_frame` / `request_capture` → `compare_shots` → `inspect_pack` → `finalize_report`). `LOOKAGAIN_AGENT=heuristic` forces the local policy (no LLM). `auto` falls back to heuristic if Bedrock is unavailable.
+
+Replay mode: append `?mode=replay` — a **REPLAY** banner must stay visible. Never present recorded traces as live.
 
 ## AWS / COOL
 

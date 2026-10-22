@@ -69,6 +69,8 @@ def _excerpt(build_info: str, limit: int = 1200) -> str:
 
 
 def health_payload(correlation_id: str | None = None) -> dict[str, Any]:
+    agent_mode = os.environ.get("LOOKAGAIN_AGENT", "auto")
+    model = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
     return {
         "service": "lookagain",
         "status": "ok",
@@ -79,6 +81,19 @@ def health_payload(correlation_id: str | None = None) -> dict[str, Any]:
             "python": platform.python_version(),
         },
         "opencv": opencv_build_info(),
+        "agent": {
+            "mode": agent_mode,
+            "bedrock_model_id": model,
+            "tools": [
+                "triage_frame",
+                "remediate_frame",
+                "compare_shots",
+                "inspect_pack",
+                "request_capture",
+                "finalize_report",
+                "escalate_human",
+            ],
+        },
         "approved_packs": [
             "appliance_leds",
             "bike_brake_pad",

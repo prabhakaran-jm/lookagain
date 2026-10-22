@@ -1,7 +1,8 @@
-"""In-memory session store + one-step vision agent loop."""
+"""In-memory session store + vision agent step (Bedrock tool-use or heuristic)."""
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -10,15 +11,27 @@ from typing import Any
 import cv2
 import numpy as np
 
-from app.vision.compare_shots import MAX_RETAKES, compare_shots
-from app.vision.evidence_gate import validate_claims
-from app.vision.packs.appliance_leds import inspect_appliance_leds
-from app.vision.packs.bike_brake_pad import inspect_bike_brake_pad
-from app.vision.packs.leaf_spot import inspect_leaf_spot
-from app.vision.remediate import remediate_frame
-from app.vision.triage import triage_frame
+from app.agent.bedrock_loop import run_bedrock_agent
+from app.agent.tools import ToolContext, execute_tool
+from app.vision.compare_shots import MAX_RETAKES
 
 APPROVED_PACKS = frozenset({"appliance_leds", "bike_brake_pad", "leaf_spot"})
+
+# auto → try Bedrock, fall back to heuristic on credential/API failure
+# bedrock → Bedrock only (error surfaces in response)
+# heuristic → local fixed policy (no LLM)
+# Sticky disable only for auth-ish failures; model EOL / NotFound should retry
+# after BEDROCK_MODEL_ID changes (common during local setup).
+_BEDROCK_OK: bool | None = None
+_BEDROCK_DISABLED_REASON: str | None = None
+_AUTH_FAILURE_MARKERS = (
+    "ExpiredToken",
+    "UnrecognizedClientException",
+    "InvalidIdentityToken",
+    "AccessDeniedException",
+    "NoCredentialsError",
+    "Unable to locate credentials",
+)
 
 
 @dataclass
@@ -32,9 +45,14 @@ class Session:
     pending_retake_reason: str | None = None
     trace: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+    last_agent: dict[str, Any] | None = None
 
 
 _SESSIONS: dict[str, Session] = {}
+
+
+def agent_mode() -> str:
+    return os.environ.get("LOOKAGAIN_AGENT", "auto").strip().lower()
 
 
 def create_session(pack_id: str, correlation_id: str) -> dict[str, Any]:
@@ -59,6 +77,7 @@ def create_session(pack_id: str, correlation_id: str) -> dict[str, Any]:
         "session_id": sid,
         "retakes_remaining": MAX_RETAKES,
         "next_action": "triage_frame",
+        "agent_mode": agent_mode(),
     }
 
 
@@ -72,22 +91,28 @@ def decode_image(data: bytes) -> np.ndarray | None:
     return img
 
 
-def _inspect(pack_id: str, bgr: np.ndarray, roi: tuple[int, int, int, int] | None) -> dict[str, Any]:
-    if pack_id == "appliance_leds":
-        return inspect_appliance_leds(bgr, roi).to_dict()
-    if pack_id == "bike_brake_pad":
-        return inspect_bike_brake_pad(bgr, roi).to_dict()
-    if pack_id == "leaf_spot":
-        return inspect_leaf_spot(bgr, roi).to_dict()
-    return {
-        "claims": [f"{pack_id}: pack not allowlisted — escalate."],
-        "next_action": "escalate_human",
-        "metrics": {},
-    }
+def _ctx_from_session(session: Session, bgr: np.ndarray) -> ToolContext:
+    return ToolContext(
+        pack_id=session.pack_id,
+        working_bgr=bgr,
+        retakes_remaining=session.retakes_remaining,
+        pending_retake_reason=session.pending_retake_reason,
+        last_shot_bgr=session.last_shot_bgr,
+        last_roi=session.last_roi,
+        trace=list(session.trace),
+    )
 
 
-def run_step(session: Session, image_bytes: bytes) -> dict[str, Any]:
-    """One agent step: decode → triage → remediate? → compare? → inspect → gate."""
+def _apply_ctx(session: Session, ctx: ToolContext) -> None:
+    session.retakes_remaining = ctx.retakes_remaining
+    session.pending_retake_reason = ctx.pending_retake_reason
+    session.last_shot_bgr = ctx.last_shot_bgr
+    session.last_roi = ctx.last_roi
+    session.trace = ctx.trace
+
+
+def run_step_bedrock(session: Session, image_bytes: bytes, *, client: Any = None) -> dict[str, Any]:
+    """Bedrock Converse chooses tools; OpenCV tools execute locally."""
     cid = session.correlation_id
     bgr = decode_image(image_bytes)
     if bgr is None:
@@ -100,165 +125,151 @@ def run_step(session: Session, image_bytes: bytes) -> dict[str, Any]:
             "trace": session.trace,
         }
 
-    triage = triage_frame(bgr)
-    session.trace.append({"tool": "triage_frame", "result": triage.to_dict()})
+    ctx = _ctx_from_session(session, bgr)
+    out = run_bedrock_agent(ctx, client=client)
+    _apply_ctx(session, ctx)
+    session.last_agent = out.get("agent")
+    out["correlation_id"] = cid
+    out["session_id"] = session.session_id
+    out["pack_id"] = session.pack_id
+    return out
 
-    working = bgr
-    working_triage = triage
 
-    if not triage.passed:
-        rem = remediate_frame(bgr, triage)
-        session.trace.append(
-            {
-                "tool": "remediate_frame",
-                "result": {
-                    "improved": rem.improved,
-                    "passed_after": rem.passed_after,
-                    "steps_applied": rem.steps_applied,
-                    "metrics": rem.metrics,
-                    "retake_reason": rem.retake_reason,
-                },
-            }
-        )
-        if rem.passed_after:
-            working = rem.image_bgr
-            working_triage = triage_frame(working)
-        else:
-            reason = rem.retake_reason or triage.retake_reason or "hold_steadier"
-            if session.retakes_remaining <= 0:
-                out = {
-                    "correlation_id": cid,
-                    "session_id": session.session_id,
-                    "pack_id": session.pack_id,
-                    "next_action": "escalate_human",
-                    "reason": "max_retakes_exhausted",
-                    "last_retake_reason": reason,
-                    "retakes_remaining": 0,
-                    "trace": session.trace,
-                }
-                return out
-            session.retakes_remaining -= 1
-            session.pending_retake_reason = reason
-            session.last_shot_bgr = working
-            session.last_roi = triage.roi
-            return {
-                "correlation_id": cid,
-                "session_id": session.session_id,
-                "pack_id": session.pack_id,
-                "next_action": "request_capture",
-                "retake_reason": reason,
-                "retakes_remaining": session.retakes_remaining,
-                "triage": triage.to_dict(),
-                "trace": session.trace,
-            }
-
-    # Optional compare gate when this shot follows a guided retake
-    if (
-        session.pending_retake_reason
-        and session.last_shot_bgr is not None
-        and session.last_roi is not None
-    ):
-        cmp = compare_shots(
-            session.last_shot_bgr,
-            working,
-            session.last_roi,
-            session.pending_retake_reason,  # type: ignore[arg-type]
-            triage_shot2_passed=working_triage.passed,
-        )
-        session.trace.append(
-            {
-                "tool": "compare_shots",
-                "result": {
-                    "passed": cmp.passed,
-                    "scale": cmp.scale,
-                    "overlap": cmp.overlap,
-                    "inlier_count": cmp.inlier_count,
-                    "fail_reason": cmp.fail_reason,
-                    "matcher": cmp.matcher,
-                    "retake_reason": cmp.retake_reason,
-                },
-            }
-        )
-        if not cmp.passed:
-            if session.retakes_remaining <= 0:
-                return {
-                    "correlation_id": cid,
-                    "session_id": session.session_id,
-                    "pack_id": session.pack_id,
-                    "next_action": "escalate_human",
-                    "reason": "compare_failed_max_retakes",
-                    "compare": session.trace[-1]["result"],
-                    "retakes_remaining": 0,
-                    "trace": session.trace,
-                }
-            session.retakes_remaining -= 1
-            return {
-                "correlation_id": cid,
-                "session_id": session.session_id,
-                "pack_id": session.pack_id,
-                "next_action": "request_capture",
-                "retake_reason": session.pending_retake_reason,
-                "compare_fail": cmp.fail_reason,
-                "retakes_remaining": session.retakes_remaining,
-                "trace": session.trace,
-            }
-        session.pending_retake_reason = None
-
-    inspect = _inspect(session.pack_id, working, working_triage.roi)
-    session.trace.append({"tool": f"inspect_{session.pack_id}", "result": inspect})
-
-    if inspect.get("next_action") == "request_capture":
-        if session.retakes_remaining <= 0:
-            return {
-                "correlation_id": cid,
-                "session_id": session.session_id,
-                "pack_id": session.pack_id,
-                "next_action": "escalate_human",
-                "reason": "inspect_needs_closer_shot",
-                "retakes_remaining": 0,
-                "trace": session.trace,
-            }
-        session.retakes_remaining -= 1
-        session.pending_retake_reason = "move_closer"
-        session.last_shot_bgr = working
-        session.last_roi = working_triage.roi
+def run_step_heuristic(session: Session, image_bytes: bytes) -> dict[str, Any]:
+    """Fixed local policy (no LLM) — same tools, deterministic routing."""
+    cid = session.correlation_id
+    bgr = decode_image(image_bytes)
+    if bgr is None:
         return {
             "correlation_id": cid,
             "session_id": session.session_id,
-            "pack_id": session.pack_id,
             "next_action": "request_capture",
-            "retake_reason": "move_closer",
+            "reason": "decode_failed",
             "retakes_remaining": session.retakes_remaining,
-            "inspect": inspect,
             "trace": session.trace,
         }
 
-    gate = validate_claims(list(inspect.get("claims") or []))
-    session.trace.append({"tool": "evidence_gate", "result": gate.to_dict()})
+    ctx = _ctx_from_session(session, bgr)
+    execute_tool("triage_frame", {}, ctx)
+    assert ctx.last_triage is not None
 
-    if not gate.allowed:
-        return {
+    if not ctx.last_triage.passed:
+        execute_tool("remediate_frame", {}, ctx)
+        if not (ctx.last_triage and ctx.last_triage.passed):
+            reason = (
+                (ctx.trace[-1]["result"].get("retake_reason") if ctx.trace else None)
+                or ctx.last_triage.retake_reason
+                or "hold_steadier"
+            )
+            execute_tool("request_capture", {"reason": reason}, ctx)
+            _apply_ctx(session, ctx)
+            out = dict(ctx.terminal or {})
+            out.update(
+                {
+                    "correlation_id": cid,
+                    "session_id": session.session_id,
+                    "pack_id": session.pack_id,
+                    "agent": {"backend": "heuristic", "tools_called": [t["tool"] for t in ctx.trace]},
+                    "trace": session.trace,
+                    "retakes_remaining": session.retakes_remaining,
+                }
+            )
+            return out
+
+    if ctx.pending_retake_reason and ctx.last_shot_bgr is not None and ctx.last_roi is not None:
+        execute_tool("compare_shots", {}, ctx)
+        cmp = ctx.trace[-1]["result"]
+        if not cmp.get("passed"):
+            execute_tool(
+                "request_capture",
+                {"reason": ctx.pending_retake_reason or "hold_steadier"},
+                ctx,
+            )
+            _apply_ctx(session, ctx)
+            out = dict(ctx.terminal or {})
+            out.update(
+                {
+                    "correlation_id": cid,
+                    "session_id": session.session_id,
+                    "pack_id": session.pack_id,
+                    "compare_fail": cmp.get("fail_reason"),
+                    "agent": {"backend": "heuristic", "tools_called": [t["tool"] for t in ctx.trace]},
+                    "trace": session.trace,
+                    "retakes_remaining": session.retakes_remaining,
+                }
+            )
+            return out
+
+    execute_tool("inspect_pack", {}, ctx)
+    inspect = ctx.last_inspect or {}
+    if inspect.get("next_action") == "request_capture":
+        execute_tool("request_capture", {"reason": "move_closer"}, ctx)
+    else:
+        execute_tool("finalize_report", {}, ctx)
+
+    _apply_ctx(session, ctx)
+    out = dict(ctx.terminal or {"next_action": "escalate_human", "reason": "heuristic_no_terminal"})
+    out.update(
+        {
             "correlation_id": cid,
             "session_id": session.session_id,
             "pack_id": session.pack_id,
-            "next_action": "escalate_human",
-            "reason": "evidence_gate_blocked",
-            "gate": gate.to_dict(),
-            "retakes_remaining": session.retakes_remaining,
+            "agent": {"backend": "heuristic", "tools_called": [t["tool"] for t in ctx.trace]},
             "trace": session.trace,
+            "retakes_remaining": session.retakes_remaining,
         }
+    )
+    if ctx.last_triage:
+        out["triage"] = ctx.last_triage.to_dict()
+    return out
 
-    session.last_shot_bgr = working
-    session.last_roi = working_triage.roi
 
-    return {
-        "correlation_id": cid,
-        "session_id": session.session_id,
-        "pack_id": session.pack_id,
-        "next_action": "finalize_report",
-        "claims": gate.claims,
-        "inspect": {k: v for k, v in inspect.items() if k not in {"leds"}},
-        "triage": working_triage.to_dict(),
-        "retakes_remaining": session.retakes_remaining,
-        "trace": session.trace,
-    }
+def run_step(session: Session, image_bytes: bytes, *, client: Any = None) -> dict[str, Any]:
+    """Route to Bedrock tool-use or heuristic per LOOKAGAIN_AGENT."""
+    global _BEDROCK_OK, _BEDROCK_DISABLED_REASON
+    mode = agent_mode()
+    use_bedrock = mode == "bedrock" or (mode == "auto" and _BEDROCK_OK is not False)
+
+    if use_bedrock:
+        try:
+            out = run_step_bedrock(session, image_bytes, client=client)
+            _BEDROCK_OK = True
+            _BEDROCK_DISABLED_REASON = None
+            return out
+        except Exception as exc:  # noqa: BLE001 — surface or fall back
+            msg = str(exc)
+            sticky = any(m in msg for m in _AUTH_FAILURE_MARKERS)
+            if sticky:
+                _BEDROCK_OK = False
+                _BEDROCK_DISABLED_REASON = msg
+            else:
+                # Model EOL / ResourceNotFound / throttles: retry next request
+                _BEDROCK_OK = None
+                _BEDROCK_DISABLED_REASON = msg
+            if mode == "bedrock":
+                return {
+                    "correlation_id": session.correlation_id,
+                    "session_id": session.session_id,
+                    "pack_id": session.pack_id,
+                    "next_action": "escalate_human",
+                    "reason": "bedrock_error",
+                    "error": msg,
+                    "retakes_remaining": session.retakes_remaining,
+                    "trace": session.trace,
+                    "agent": {"backend": "bedrock_converse", "error": msg},
+                }
+            # auto → heuristic
+            out = run_step_heuristic(session, image_bytes)
+            out.setdefault("agent", {})
+            if isinstance(out["agent"], dict):
+                out["agent"]["bedrock_fallback"] = msg
+                out["agent"]["bedrock_hint"] = (
+                    "Set BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0 "
+                    "and restart uvicorn (old Haiku 3 IDs are EOL)."
+                )
+            return out
+
+    out = run_step_heuristic(session, image_bytes)
+    if mode == "auto" and _BEDROCK_DISABLED_REASON and isinstance(out.get("agent"), dict):
+        out["agent"]["bedrock_skipped"] = _BEDROCK_DISABLED_REASON
+    return out
