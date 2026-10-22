@@ -16,7 +16,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="LookAgain", version="0.2.0")
+app = FastAPI(title="LookAgain", version="0.3.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 

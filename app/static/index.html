@@ -127,22 +127,25 @@
       statusEl.className = "status" + (kind ? " " + kind : "");
     }
 
-    function summarize(j) {
+        function summarize(j) {
       const next = j.next_action || "?";
+      const tools = (j.agent && j.agent.tools_called) ? " [" + j.agent.tools_called.join(" -> ") + "]" : "";
+      const backend = (j.agent && j.agent.backend) ? " (" + j.agent.backend + ")" : "";
       if (next === "finalize_report") {
-        return { text: "Finalize — " + (j.claims || []).join(" | "), kind: "ok" };
+        return { text: "Finalize" + backend + tools + " — " + (j.claims || []).join(" | "), kind: "ok" };
       }
       if (next === "request_capture") {
         return {
-          text: "Retake (" + (j.retake_reason || "?") + ") — " + j.retakes_remaining + " left",
+          text: "Retake (" + (j.retake_reason || "?") + ") — " + j.retakes_remaining + " left" + backend + tools,
           kind: "warn",
         };
       }
       if (next === "escalate_human") {
-        return { text: "Escalate — " + (j.reason || "HITL"), kind: "bad" };
+        return { text: "Escalate — " + (j.reason || "HITL") + backend + tools, kind: "bad" };
       }
-      return { text: next, kind: "" };
+      return { text: next + backend + tools, kind: "" };
     }
+
 
     document.getElementById("send").onclick = async () => {
       const pack = document.getElementById("pack").value;
