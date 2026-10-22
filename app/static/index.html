@@ -11,6 +11,7 @@
       --muted: #8b98a5;
       --accent: #3d9cf0;
       --warn: #f0b429;
+      --ok: #3ecf8e;
       --panel: #1a222c;
     }
     * { box-sizing: border-box; }
@@ -64,6 +65,18 @@
       font-weight: 650;
       cursor: pointer;
     }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status {
+      font-size: 0.95rem;
+      margin: 0 0 0.75rem;
+      padding: 0.65rem 0.75rem;
+      border-radius: 8px;
+      background: #121820;
+      border: 1px solid #2a3644;
+    }
+    .status.ok { border-color: var(--ok); color: var(--ok); }
+    .status.warn { border-color: var(--warn); color: var(--warn); }
+    .status.bad { border-color: #e85d5d; color: #e85d5d; }
     pre {
       white-space: pre-wrap;
       word-break: break-word;
@@ -72,7 +85,7 @@
       padding: 0.85rem;
       border-radius: 8px;
       border: 1px solid #243040;
-      max-height: 280px;
+      max-height: 420px;
       overflow: auto;
     }
   </style>
@@ -81,7 +94,7 @@
   <div id="replayBanner" class="replay-banner" role="status">REPLAY — recorded trace, not a live agent run</div>
   <main>
     <h1>LookAgain</h1>
-    <p class="lead">Phone capture → OpenCV triage → guided retake. Thursday hello-world scaffold.</p>
+    <p class="lead">Phone capture → triage → remediate → compare → bounded finalize.</p>
 
     <div class="panel">
       <label for="pack">Scenario pack</label>
@@ -95,8 +108,9 @@
       <label for="photo">Photo (phone camera or file)</label>
       <input id="photo" type="file" accept="image/*" capture="environment" />
 
-      <button id="send" type="button">Upload &amp; start</button>
-      <pre id="out">Waiting…</pre>
+      <button id="send" type="button">Run agent step</button>
+      <div id="status" class="status">Waiting…</div>
+      <pre id="out">Trace will appear here.</pre>
     </div>
   </main>
   <script>
@@ -105,32 +119,56 @@
       document.getElementById("replayBanner").classList.add("visible");
     }
     const out = document.getElementById("out");
+    const statusEl = document.getElementById("status");
+    let sessionId = null;
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function summarize(j) {
+      const next = j.next_action || "?";
+      if (next === "finalize_report") {
+        return { text: "Finalize — " + (j.claims || []).join(" | "), kind: "ok" };
+      }
+      if (next === "request_capture") {
+        return {
+          text: "Retake (" + (j.retake_reason || "?") + ") — " + j.retakes_remaining + " left",
+          kind: "warn",
+        };
+      }
+      if (next === "escalate_human") {
+        return { text: "Escalate — " + (j.reason || "HITL"), kind: "bad" };
+      }
+      return { text: next, kind: "" };
+    }
+
     document.getElementById("send").onclick = async () => {
       const pack = document.getElementById("pack").value;
       const fileInput = document.getElementById("photo");
-      out.textContent = "Starting session…";
-      const startFd = new FormData();
-      startFd.append("pack_id", pack);
-      const startRes = await fetch("/api/session/start", { method: "POST", body: startFd });
-      const startJson = await startRes.json();
-      if (!startJson.allowed) {
-        out.textContent = JSON.stringify(startJson, null, 2);
-        return;
-      }
       if (!fileInput.files.length) {
-        out.textContent = JSON.stringify({ ...startJson, note: "Pick a photo to upload" }, null, 2);
+        setStatus("Pick a photo first.", "warn");
         return;
       }
-      const upFd = new FormData();
-      upFd.append("pack_id", pack);
-      upFd.append("file", fileInput.files[0]);
-      const upRes = await fetch("/api/upload", {
-        method: "POST",
-        headers: { "X-Correlation-ID": startJson.correlation_id },
-        body: upFd,
-      });
-      const upJson = await upRes.json();
-      out.textContent = JSON.stringify({ session: startJson, upload: upJson }, null, 2);
+      setStatus("Running…", "");
+      const fd = new FormData();
+      fd.append("pack_id", pack);
+      fd.append("file", fileInput.files[0]);
+      if (sessionId) fd.append("session_id", sessionId);
+
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const json = await res.json();
+      if (json.session_id) sessionId = json.session_id;
+      if (json.allowed === false) sessionId = null;
+
+      const s = summarize(json);
+      setStatus(s.text, s.kind);
+      out.textContent = JSON.stringify(json, null, 2);
+
+      if (json.next_action === "finalize_report" || json.next_action === "escalate_human") {
+        sessionId = null;
+      }
     };
   </script>
 </body>
