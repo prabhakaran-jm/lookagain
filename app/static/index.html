@@ -65,7 +65,19 @@
       font-weight: 650;
       cursor: pointer;
     }
+    button.secondary {
+      background: #243040;
+      color: var(--fg);
+      border: 1px solid #3a4a5c;
+    }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.6rem;
+      margin-bottom: 0.9rem;
+    }
+    .row button { margin-bottom: 0; }
     .status {
       font-size: 0.95rem;
       margin: 0 0 0.75rem;
@@ -88,6 +100,7 @@
       max-height: 420px;
       overflow: auto;
     }
+    .hint { font-size: 0.8rem; color: var(--muted); margin: -0.4rem 0 0.8rem; }
   </style>
 </head>
 <body>
@@ -104,6 +117,13 @@
         <option value="leaf_spot">leaf_spot</option>
         <option value="breaker_panel">breaker_panel (should escalate)</option>
       </select>
+
+      <label>No-prop demo pairs</label>
+      <p class="hint">Runs shot1 then shot2 through the agent (glare→retake→finalize).</p>
+      <div class="row">
+        <button id="pairGlare" class="secondary" type="button">Glare → clean</button>
+        <button id="pairCloser" class="secondary" type="button">Far → closer</button>
+      </div>
 
       <label for="photo">Photo (phone camera or file)</label>
       <input id="photo" type="file" accept="image/*" capture="environment" />
@@ -127,9 +147,9 @@
       statusEl.className = "status" + (kind ? " " + kind : "");
     }
 
-        function summarize(j) {
+    function summarize(j) {
       const next = j.next_action || "?";
-      const tools = (j.agent && j.agent.tools_called) ? " [" + j.agent.tools_called.join(" -> ") + "]" : "";
+      const tools = (j.agent && j.agent.tools_called) ? " [" + j.agent.tools_called.join(" → ") + "]" : "";
       const backend = (j.agent && j.agent.backend) ? " (" + j.agent.backend + ")" : "";
       if (next === "finalize_report") {
         return { text: "Finalize" + backend + tools + " — " + (j.claims || []).join(" | "), kind: "ok" };
@@ -146,12 +166,37 @@
       return { text: next + backend + tools, kind: "" };
     }
 
+    async function runPair(pairId) {
+      const pack = document.getElementById("pack").value;
+      setStatus("Running fixture pair " + pairId + "…", "");
+      sessionId = null;
+      const fd = new FormData();
+      fd.append("pair_id", pairId);
+      fd.append("pack_id", pack);
+      const res = await fetch("/api/demo/run_pair", { method: "POST", body: fd });
+      const json = await res.json();
+      out.textContent = JSON.stringify(json, null, 2);
+      if (!res.ok) {
+        setStatus(json.error || "pair failed", "bad");
+        return;
+      }
+      const s1 = summarize(json.step1 || {});
+      const s2 = summarize(json.step2 || {});
+      const ok = json.demo_ok ? "ok" : "warn";
+      setStatus(
+        "1) " + s1.text + "  →  2) " + s2.text + (json.demo_ok ? "  ✓ pair demo_ok" : ""),
+        ok
+      );
+    }
+
+    document.getElementById("pairGlare").onclick = () => runPair("leds_glare_retake");
+    document.getElementById("pairCloser").onclick = () => runPair("leds_closer_retake");
 
     document.getElementById("send").onclick = async () => {
       const pack = document.getElementById("pack").value;
       const fileInput = document.getElementById("photo");
       if (!fileInput.files.length) {
-        setStatus("Pick a photo first.", "warn");
+        setStatus("Pick a photo first (or use a demo pair).", "warn");
         return;
       }
       setStatus("Running…", "");

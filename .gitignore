@@ -17,3 +17,16 @@ deploy/mp_filters*.json
 
 deploy/hard_stop_status.txt
 deploy/GOAL_AUDIT.md
+
+# Local ops / drafts — keep out of Devpost repo
+*.ps1
+*.mp4
+scripts/make_demo_preview.py
+deploy/COOL_TRIAL_REMINDER.md
+deploy/DEMO_VIDEO_SHOTLIST.md
+deploy/aws_thursday.md
+deploy/lookagain-cool-reminders.ics
+docs/fixtures/**/*.md
+docs/fixtures/**/*.txt
+app/static/fixtures/**/*.md
+app/static/fixtures/**/*.txt

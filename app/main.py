@@ -14,9 +14,16 @@ from app.health import health_payload
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
+FIXTURES_DIR = STATIC_DIR / "fixtures"
 STATIC_DIR.mkdir(exist_ok=True)
+FIXTURES_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="LookAgain", version="0.3.0")
+DEMO_PAIRS = {
+    "leds_glare_retake": "Glare wash → clean retake (less_glare / compare pass)",
+    "leds_closer_retake": "Full panel → closer crop (move_closer / compare pass)",
+}
+
+app = FastAPI(title="LookAgain", version="0.3.1")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -109,3 +116,66 @@ async def upload_image(
 
     session.correlation_id = cid
     return run_step(session, data)
+
+
+@app.get("/api/demo/pairs")
+async def list_demo_pairs():
+    """Available no-prop fixture pairs for video / judging demos."""
+    pairs = []
+    for pair_id, blurb in DEMO_PAIRS.items():
+        d = FIXTURES_DIR / pair_id
+        pairs.append(
+            {
+                "pair_id": pair_id,
+                "description": blurb,
+                "shot1_url": f"/static/fixtures/{pair_id}/shot1.jpg",
+                "shot2_url": f"/static/fixtures/{pair_id}/shot2.jpg",
+                "ready": (d / "shot1.jpg").exists() and (d / "shot2.jpg").exists(),
+            }
+        )
+    return {"pairs": pairs}
+
+
+@app.post("/api/demo/run_pair")
+async def run_demo_pair(
+    request: Request,
+    pair_id: str = Form("leds_glare_retake"),
+    pack_id: str = Form("appliance_leds"),
+    x_correlation_id: str | None = Header(default=None),
+):
+    """Run shot1 then shot2 through the agent — glare→retake→pass without props."""
+    cid = x_correlation_id or getattr(request.state, "correlation_id", str(uuid.uuid4()))
+    if pair_id not in DEMO_PAIRS:
+        return JSONResponse(
+            {"correlation_id": cid, "error": "unknown_pair", "known": list(DEMO_PAIRS)},
+            status_code=400,
+        )
+    shot1_path = FIXTURES_DIR / pair_id / "shot1.jpg"
+    shot2_path = FIXTURES_DIR / pair_id / "shot2.jpg"
+    if not shot1_path.exists() or not shot2_path.exists():
+        return JSONResponse(
+            {
+                "correlation_id": cid,
+                "error": "fixtures_missing",
+                "hint": "python scripts/make_fixture_pairs.py",
+            },
+            status_code=404,
+        )
+
+    started = create_session(pack_id, cid)
+    if not started.get("allowed"):
+        return started
+    session = get_session(started["session_id"])
+    assert session is not None
+
+    step1 = run_step(session, shot1_path.read_bytes())
+    step2 = run_step(session, shot2_path.read_bytes())
+    return {
+        "correlation_id": cid,
+        "pair_id": pair_id,
+        "pack_id": pack_id,
+        "session_id": session.session_id,
+        "step1": step1,
+        "step2": step2,
+        "demo_ok": step2.get("next_action") == "finalize_report",
+    }
