@@ -14,3 +14,6 @@ artifacts/
 .cursor/
 deploy/cool_instance.txt
 deploy/mp_filters*.json
+
+deploy/hard_stop_status.txt
+deploy/GOAL_AUDIT.md
