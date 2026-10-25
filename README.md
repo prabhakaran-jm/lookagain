@@ -27,7 +27,11 @@ Replay mode: append `?mode=replay` — a **REPLAY** banner must stay visible. Ne
 
 ## AWS / COOL
 
-See [deploy/aws_thursday.md](deploy/aws_thursday.md). Target: COOL Graviton4 AMI on `c8g.large`, keep through **9 Nov**.
+Optional COOL on Graviton: see [docs/submission/COOL_EVIDENCE.md](docs/submission/COOL_EVIDENCE.md) and [docs/submission/JUDGE_DEMO.md](docs/submission/JUDGE_DEMO.md). Bench notes live under `deploy/bench_*.md`.
+
+## Devpost submission
+
+Full package (report, architecture, agentic traces, COOL evidence, judge demo): **[docs/submission/](docs/submission/README.md)**.
 
 ## Packs
 
